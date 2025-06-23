@@ -2,6 +2,55 @@ import paho.mqtt.client as mqtt
 import json
 import time
 from datetime import datetime
+import mysql.connector
+
+def connect_db():
+    return mysql.connector.connect(
+        host="10.252.16.11",
+        user="quentin",
+        password="quentin",
+        database="sae204"
+    )
+
+last_data = {}
+
+def insert_data(data):
+    conn = connect_db()
+    cursor = conn.cursor()
+    try:
+        # Récupération cohérente de l'ID capteur
+        id_capteur = data.get("idCapteur") or data.get("Id") or data.get("idcapteur")
+        # Récupération du nom du capteur, de la pièce, etc.
+        nom_capteur = data.get("nom_capteur")
+        piece = data.get("piece")
+        emp_cap = data.get("emp_cap")
+
+        # Vérification de l'existence du capteur dans la table capteurs
+        cursor.execute("SELECT id_capteur FROM capteurs WHERE id_capteur = %s", (id_capteur,))
+        if not cursor.fetchone():
+            # Insertion du capteur s'il n'existe pas
+            cursor.execute(
+                "INSERT INTO capteurs (id_capteur, nom_capteur, piece, emp_cap) VALUES (%s, %s, %s, %s)",
+                (id_capteur, nom_capteur, piece, emp_cap)
+            )
+            conn.commit()
+
+        # Conversion et nettoyage de la température
+        temperature = float(data["temp"].replace(',', '.'))
+        # Génération du timestamp actuel
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        # Insertion de la donnée dans la table donnees
+        cursor.execute(
+            "INSERT INTO donnees (id_capteur, timestamp, temperature) VALUES (%s, %s, %s)",
+            (id_capteur, timestamp, temperature)
+        )
+        conn.commit()
+    except Exception as e:
+        print("Erreur insertion:", e)
+    finally:
+        cursor.close()
+        conn.close()
 
 BROKER = "test.mosquitto.org"
 PORT = 1883
@@ -9,9 +58,6 @@ TOPICS = [
     "IUT/Colmar2025/SAE2.04/Maison1",
     "IUT/Colmar2025/SAE2.04/Maison2"
 ]
-
-# Stockage des données par maison puis par pièce
-last_data = {}
 
 def on_connect(client, userdata, flags, rc):
     print("Connecté au broker MQTT")
@@ -22,18 +68,25 @@ def on_message(client, userdata, msg):
     payload = msg.payload.decode('utf-8')
     print(f"Message reçu sur {msg.topic}: {payload}")
 
-    # Parsing du message CSV
     data = {}
     for item in payload.split(','):
         key, value = item.split('=', 1)
         data[key.strip()] = value.strip()
 
-    # Conversion de la température (remplace la virgule par un point)
+    # Nettoyage de la température
     if 'temp' in data:
-        data['temp'] = float(data['temp'].replace(',', '.'))
-    data['house'] = "Maison1" if "Maison1" in msg.topic else "Maison2"
+        data['temp'] = data['temp'].replace(',', '.')
 
-    # Stockage des données par maison et pièce
+    # Identification de la maison
+    data['house'] = "Maison1" if "Maison1" in msg.topic else "Maison2"
+    # Ajout de la pièce si nécessaire
+    if 'piece' not in data:
+        data['piece'] = "Unknown"
+
+    # INSERTION DANS LA BASE DE DONNÉES
+    insert_data(data)
+
+    # Mise à jour du cache
     if data['house'] not in last_data:
         last_data[data['house']] = {}
     last_data[data['house']][data['piece']] = data
@@ -48,13 +101,11 @@ client.loop_start()
 try:
     while True:
         if last_data:
-            # Publication toutes les 5 secondes sur le topic adapté à chaque pièce/maison
             for house, pieces in last_data.items():
                 for piece, data in pieces.items():
                     topic_pub = f"IUT/Colmar2025/SAE2.04/{house}/{piece}"
-                    # Format JSON plat pour IoT MQTT Panel
                     json_data = {
-                        "temp": data.get('temp', 0),
+                        "temp": float(data.get('temp', 0)),
                         "room": piece,
                         "house": house,
                         "id": data.get('Id', 'unknown'),
