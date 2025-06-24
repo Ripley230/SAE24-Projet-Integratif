@@ -3,46 +3,66 @@ import json
 import time
 from datetime import datetime
 import mysql.connector
+import threading
 
-def connect_db():
-    return mysql.connector.connect(
-        host="10.252.16.11",
-        user="quentin",
-        password="quentin",
-        database="sae204"
-    )
+# 1. Configuration de la base de données
+DB_CONFIG = {
+    "host": "10.252.16.11",
+    "user": "quentin",
+    "password": "quentin",
+    "database": "sae204"
+}
 
+# 2. Configuration MQTT
+BROKER = "test.mosquitto.org"
+PORT = 1883
+TOPICS = [
+    "IUT/Colmar2025/SAE2.04/Maison1",
+    "IUT/Colmar2025/SAE2.04/Maison2"
+]
+
+# 3. Cache des dernières données
 last_data = {}
 
+# 4. Connecteur à la base de données (simplifié)
+def connect_db():
+    try:
+        return mysql.connector.connect(**DB_CONFIG)
+    except mysql.connector.Error as err:
+        print(f"Erreur DB: {err}")
+        return None
+
+# 5. Insertion des données dans la base
 def insert_data(data):
     conn = connect_db()
+    if not conn:
+        print("Connexion DB échouée, abandon de l'insertion.")
+        return
+
     cursor = conn.cursor()
     try:
         # Récupération cohérente de l'ID capteur
         id_capteur = data.get("idCapteur") or data.get("Id") or data.get("idcapteur")
-        # Récupération du nom du capteur, de la pièce, etc.
-        nom_capteur = data.get("nom_capteur")
-        piece = data.get("piece")
-        emp_cap = data.get("emp_cap")
+        nom_capteur = data.get("nom_capteur", "Inconnu")
+        piece = data.get("piece", "Unknown")
+        emp_cap = data.get("emp_cap", "Inconnu")
 
-        # Vérification de l'existence du capteur dans la table capteurs
+        # Vérifie l'existence du capteur
         cursor.execute("SELECT id_capteur FROM capteurs WHERE id_capteur = %s", (id_capteur,))
         if not cursor.fetchone():
-            # Insertion du capteur s'il n'existe pas
             cursor.execute(
                 "INSERT INTO capteurs (id_capteur, nom_capteur, piece, emp_cap) VALUES (%s, %s, %s, %s)",
                 (id_capteur, nom_capteur, piece, emp_cap)
             )
-            conn.commit()
+        conn.commit()
 
-        idDonnees = data.get("idDonnees")
-        # Conversion et nettoyage de la température
-        temperature = float(data["temp"].replace(',', '.'))
-        # Génération du timestamp actuel
+        # Préparation des champs pour la table donnees
+        idDonnees = data.get("idDonnees", None)
+        temperature = float(data["temp"].replace(',', '.')) if "temp" in data else 0.0
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        Capteur_idCapteur = data.get("capteur_idCapteur")
+        Capteur_idCapteur = data.get("capteur_idCapteur") or id_capteur
 
-        # Insertion de la donnée dans la table donnees
+        # Insertion dans donnees
         cursor.execute(
             "INSERT INTO donnees (idDonnees, timestamp, temperature, Capteur_idCapteur) VALUES (%s, %s, %s, %s)",
             (idDonnees, timestamp, temperature, Capteur_idCapteur)
@@ -54,53 +74,49 @@ def insert_data(data):
         cursor.close()
         conn.close()
 
-BROKER = "test.mosquitto.org"
-PORT = 1883
-TOPICS = [
-    "IUT/Colmar2025/SAE2.04/Maison1",
-    "IUT/Colmar2025/SAE2.04/Maison2"
-]
-
-def on_connect(client, userdata, flags, rc):
+# 6. Callbacks MQTT
+def on_connect(client, userdata, flags, rc, properties=None):
     print("Connecté au broker MQTT")
     for topic in TOPICS:
         client.subscribe(topic)
 
 def on_message(client, userdata, msg):
-    payload = msg.payload.decode('utf-8')
-    print(f"Message reçu sur {msg.topic}: {payload}")
+    try:
+        payload = msg.payload.decode('utf-8')
+        print(f"Message reçu sur {msg.topic}: {payload}")
 
-    data = {}
-    for item in payload.split(','):
-        key, value = item.split('=', 1)
-        data[key.strip()] = value.strip()
+        # Tente de parser en JSON, sinon fallback sur key=value
+        try:
+            data = json.loads(payload)
+        except json.JSONDecodeError:
+            data = {}
+            for item in payload.split(','):
+                if '=' in item:
+                    key, value = item.split('=', 1)
+                    data[key.strip()] = value.strip()
 
-    # Nettoyage de la température
-    if 'temp' in data:
-        data['temp'] = data['temp'].replace(',', '.')
+        # Nettoyage de la température
+        if 'temp' in data:
+            data['temp'] = data['temp'].replace(',', '.')
 
-    # Identification de la maison
-    data['house'] = "Maison1" if "Maison1" in msg.topic else "Maison2"
-    # Ajout de la pièce si nécessaire
-    if 'piece' not in data:
-        data['piece'] = "Unknown"
+        # Identification maison et pièce
+        data['house'] = "Maison1" if "Maison1" in msg.topic else "Maison2"
+        if 'piece' not in data:
+            data['piece'] = "Unknown"
 
-    # INSERTION DANS LA BASE DE DONNÉES
-    insert_data(data)
+        # Insertion dans la base
+        insert_data(data)
 
-    # Mise à jour du cache
-    if data['house'] not in last_data:
-        last_data[data['house']] = {}
-    last_data[data['house']][data['piece']] = data
+        # Mise à jour du cache
+        if data['house'] not in last_data:
+            last_data[data['house']] = {}
+        last_data[data['house']][data['piece']] = data
 
-client = mqtt.Client()
-client.on_connect = on_connect
-client.on_message = on_message
+    except Exception as e:
+        print("Erreur on_message:", e)
 
-client.connect(BROKER, PORT)
-client.loop_start()
-
-try:
+# 7. Publication périodique des données
+def publish_task(client):
     while True:
         if last_data:
             for house, pieces in last_data.items():
@@ -116,6 +132,17 @@ try:
                     client.publish(topic_pub, json.dumps(json_data), qos=1)
                     print(f"Publié sur {topic_pub}: {json_data}")
         time.sleep(5)
+
+# 8. Initialisation et lancement
+client = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2)
+client.on_connect = on_connect
+client.on_message = on_message
+
+try:
+    client.connect(BROKER, PORT)
+    # Lancement du thread de publication
+    threading.Thread(target=publish_task, args=(client,), daemon=True).start()
+    client.loop_forever()
 except KeyboardInterrupt:
-    client.loop_stop()
     client.disconnect()
+    print("Déconnexion propre du client MQTT")
