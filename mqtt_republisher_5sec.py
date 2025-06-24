@@ -35,15 +35,17 @@ def insert_data(data):
             )
             conn.commit()
 
+        idDonnees = data.get("idDonnees")
         # Conversion et nettoyage de la température
         temperature = float(data["temp"].replace(',', '.'))
         # Génération du timestamp actuel
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        Capteur_idCapteur = data.get("capteur_idCapteur")
 
         # Insertion de la donnée dans la table donnees
         cursor.execute(
-            "INSERT INTO donnees (id_capteur, timestamp, temperature) VALUES (%s, %s, %s)",
-            (id_capteur, timestamp, temperature)
+            "INSERT INTO donnees (idDonnees, timestamp, temperature, Capteur_idCapteur) VALUES (%s, %s, %s, %s)",
+            (idDonnees, timestamp, temperature, Capteur_idCapteur)
         )
         conn.commit()
     except Exception as e:
