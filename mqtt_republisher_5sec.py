@@ -22,11 +22,9 @@ def traiter_message(client, userdata, msg):
 
     conn = connecter_bdd()
     curseur = conn.cursor()
-    # Correction: 4 valeurs pour INSERT IGNORE
     curseur.execute("""INSERT IGNORE INTO capteur (idCapteur, nom_capteur, piece, emp_cap) VALUES (%s, %s, %s, %s)""",
                    (id_capteur, id_capteur, piece, None))
     date_pc = datetime.now()
-    # Correction: virgule ajoutée
     curseur.execute("""INSERT INTO donnees (timestamp, temperature, Capteur_idCapteur) VALUES (%s, %s, %s)""",
                    (date_pc, temperature, id_capteur))
     conn.commit()
@@ -34,7 +32,6 @@ def traiter_message(client, userdata, msg):
     conn.close()
     donnees_recues[piece] = donnees
 
-# Correction: signature avec 4 paramètres
 def quand_connecte(client, userdata, flags, rc):
     print("Connecté au serveur MQTT !")
     for sujet in ["IUT/Colmar2025/SAE2.04/Maison1", "IUT/Colmar2025/SAE2.04/Maison2"]:
@@ -62,11 +59,9 @@ while True:
             piece = donnees.get("piece")
             conn = connecter_bdd()
             curseur = conn.cursor()
-            # Correction: 4 valeurs
             curseur.execute("""INSERT IGNORE INTO capteur (idCapteur, nom_capteur, piece, emp_cap) VALUES (%s, %s, %s, %s)""",
                            (id_capteur, id_capteur, piece, None))
             date_pc = datetime.now()
-            # Correction: virgule ajoutée
             curseur.execute("""INSERT INTO donnees (timestamp, temperature, Capteur_idCapteur) VALUES (%s, %s, %s)""",
                            (date_pc, temperature, id_capteur))
             conn.commit()
